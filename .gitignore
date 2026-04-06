@@ -13,13 +13,29 @@
 /.zed
 /auth.json
 /node_modules
-/public/build
 /public/hot
 /public/storage
-/storage/*.key
-/storage/pail
-/vendor
+storage/*.key
+storage/pail
+vendor
 _ide_helper.php
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# === Vercel遗留 - 不再需要 ===
+.vercel
+
+# === 本地开发缓存（不提交）===
+bootstrap/cache/*.php
+storage/framework/*.php
+storage/framework/sessions/*
+storage/framework/views/*
+storage/logs/*
+
+# === 但保留目录结构 ===
+!bootstrap/cache/.gitkeep
+!storage/framework/.gitkeep
+!storage/framework/sessions/.gitkeep
+!storage/framework/views/.gitkeep
+!storage/logs/.gitkeep
