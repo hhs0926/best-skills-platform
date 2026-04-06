@@ -2,7 +2,51 @@
 /**
  * Vercel Serverless Function entry point for Laravel
  * Handles Vercel's read-only filesystem by redirecting writable paths to /tmp
+ *
+ * CRITICAL FIX: We redefine Illuminate\Foundation\Bootstrap\HandleExceptions 
+ * BEFORE the real class is loaded, making our version take precedence.
  */
+
+// === Monkey-patch HandleExceptions to ignore tempnam warnings ===
+namespace Illuminate\Foundation\Bootstrap {
+    class HandleExceptions {
+        public function handle($ignore = []) {
+            // Register a SAFE error handler that ignores tempnam warnings
+            set_error_handler(function ($level, $message, $file = '', $line = 0) {
+                // CRITICAL: Ignore tempnam/tmpfile warnings - harmless on Vercel Lambda
+                if ((strpos($message, 'tempnam') !== false || strpos($message, 'tmpfile') !== false)
+                    && strpos($message, 'temporary directory') !== false) {
+                    return true; // Suppress completely
+                }
+                
+                // Check if error reporting includes this level
+                if (!(error_reporting() & $level)) {
+                    return false;
+                }
+                
+                throw new \ErrorException($message, 0, $level, $file, $line);
+            });
+            
+            set_exception_handler(function (\Throwable $e) {
+                $handler = app(\Illuminate\Contracts\Debug\ExceptionHandler::class);
+                $handler->report($e);
+                $handler->render(request(), $e)->send();
+            });
+
+            register_shutdown_function(function () {
+                if (!is_null($error = error_get_last()) && $this->isFatal($error['type'])) {
+                }
+            });
+        }
+
+        protected function isFatal($type) {
+            return in_array($type, [E_COMPILE_ERROR, E_CORE_ERROR, E_ERROR, E_PARSE]);
+        }
+    }
+}
+
+// Back to global namespace for the rest of the code
+namespace {
 
 $tmpDir = sys_get_temp_dir();
 
@@ -58,86 +102,22 @@ $app->useStoragePath($tmpDir . '/laravel_storage');
 $app->useBootstrapPath($dstCacheDir);
 $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
 
-// === NUCLEAR OPTION: Use Reflection to modify HandleExceptions's warning level property ===
-// Laravel's HandleExceptions converts E_WARNING to ErrorException when this flag is set
-try {
-    $handlerRef = new ReflectionClass(\Illuminate\Foundation\Bootstrap\HandleExceptions::class);
-    
-    // Find the HandleExceptions instance bound in the container or get it from the bootstrap
-    // The key insight: we can access it through the resolved exception handler
-    $app->resolving(\Illuminate\Contracts\Debug\ExceptionHandler::class, function ($handler, $app) {
-        // This won't help since handler is already resolved
-    });
-} catch (\Throwable $e) {
-    // Reflection failed, try another approach
-}
-
-// === FINAL APPROACH: Wrap handleRequest to catch+suppress tempnam ErrorExceptions ===
-// We know the exact error - intercept it at the outermost level
-
-// Register a custom exception handler that detects and handles tempnam warnings specially
-$exceptionHandler = $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class);
-
-// Use reportable to detect the tempnam issue but don't stop propagation  
-// Instead, we wrap the entire request handling
-$hadTempnamWarning = false;
-
-set_exception_handler(function (\Throwable $e) use (&$hadTempnamWarning) {
-    $msg = $e->getMessage();
-    if (strpos($msg, 'tempnam') !== false && strpos($msg, 'temporary directory') !== false) {
-        $hadTempnamWarning = true;
-        // Don't re-throw - just mark it. The response may have already been generated.
-        return;
-    }
-    throw $e; // Re-throw real exceptions
+// Custom exception renderer for clean error display
+$app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(function (\Throwable $e, $request) {
+    return response(
+        "<!DOCTYPE html><html><head><title>" . htmlspecialchars(get_class($e)) . "</title>"
+        . "<style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#eee}"
+        . "h1{color:#e94560}.error{background:#16213e;padding:15px;border-radius:8px;margin:10px 0}"
+        . "table{width:100%;border-collapse:collapse}td{padding:4px 8px;border-bottom:1px #333 solid;font-size:13px}</style></head><body>"
+        . "<h1>" . htmlspecialchars(get_class($e)) . "</h1>"
+        . "<div class='error'>" . htmlspecialchars($e->getMessage()) . "<br>" . htmlspecialchars($e->getFile()) . ':' . $e->getLine() . "</div>"
+        . "</body></html>",
+        500,
+        ['Content-Type' => 'text/html; charset=utf-8']
+    );
 });
 
-try {
-    $response = $app->handleRequest(Illuminate\Http\Request::capture());
-    $response->send();
-} catch (\Throwable $e) {
-    $msg = $e->getMessage();
-    
-    // If it's the tempnam warning, the page was likely compiled successfully
-    // Try to send whatever response content was generated
-    if (strpos($msg, 'tempnam') !== false && strpos($msg, 'temporary directory') !== false) {
-        // The blade view got compiled (that's what triggered tempnam)
-        // But the error was thrown during Response::setContent -> View::render
-        // This means the view CONTENT was generated but not wrapped in Response
-        
-        // Attempt recovery: re-run with pre-compiled views (they should be cached now)
-        restore_exception_handler();
-        
-        try {
-            $response2 = $app->handleRequest(Illuminate\Http\Request::capture());
-            $response2->send();
-            return;
-        } catch (\Throwable $e2) {
-            // If still fails, show the error
-            $msg2 = $e2->getMessage();
-        }
-    }
-    
-    // Show clean error for any other exception
-    http_response_code(500);
-    header('Content-Type: text/html; charset=utf-8');
-    echo '<!DOCTYPE html><html><head><title>' . htmlspecialchars(get_class($e)) . '</title>'
-       . '<style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#eee}'
-       . 'h1{color:#e94560}.error{background:#16213e;padding:15px;border-radius:8px;margin:10px 0}'
-       . 'table{width:100%;border-collapse:collapse}td{padding:4px 8px;border-bottom:1px #333 solid;font-size:13px}</style></head><body>'
-       . '<h1>' . htmlspecialchars(get_class($e)) . '</h1>'
-       . '<div class="error"><strong>Message:</strong> ' . htmlspecialchars($msg) 
-       . '<br><strong>File:</strong> ' . htmlspecialchars($e->getFile()) . ':' . $e->getLine() . '</div>';
-    
-    $traceHtml = '';
-    foreach (array_slice($e->getTrace(), 0, 15) as $i => $frame) {
-        $file = isset($frame['file']) ? $frame['file'] : '(internal)';
-        $line = isset($frame['line']) ? $frame['line'] : '?';
-        $class = isset($frame['class']) ? $frame['class'] : '';
-        $type = isset($frame['type']) ? $frame['type'] : '';
-        $func = isset($frame['function']) ? $frame['function'] : '';
-        $traceHtml .= "<tr><td>#{$i}</td><td>" . htmlspecialchars($class . $type . $func) . "</td>";
-        $traceHtml .= "<td>" . htmlspecialchars("{$file}:{$line}") . "</td></tr>\n";
-    }
-    echo "<h3>Stack Trace</h3><table>{$traceHtml}</table></body></html>";
+// Handle the request
+$response = $app->handleRequest(Illuminate\Http\Request::capture());
+$response->send();
 }
