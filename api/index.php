@@ -4,6 +4,10 @@
  * Handles Vercel's read-only filesystem by redirecting writable paths to /tmp
  */
 
+// CRITICAL: Suppress E_WARNING for tempnam() - Vercel Lambda converts warnings to ErrorExceptions
+// We must use error_reporting() since set_error_handler gets overridden by Laravel's HandleExceptions
+error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE);
+
 $tmpDir = sys_get_temp_dir();
 
 // Create ALL required writable directories in /tmp
@@ -58,17 +62,10 @@ $app->useStoragePath($tmpDir . '/laravel_storage');
 $app->useBootstrapPath($dstCacheDir);
 $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
 
-// CRITICAL: Set error handler AFTER Laravel boot (Laravel's HandleExceptions overrides it)
-// Suppress tempnam() warnings - Vercel Lambda treats E_WARNING as errors
-set_error_handler(function($errno, $errstr) {
-    if (strpos($errstr, 'tempnam') !== false || strpos($errstr, 'tmpfile') !== false 
-        || strpos($errstr, 'temporary directory') !== false) {
-        return true; // Suppress
-    }
-    return false; // Let Laravel handle other errors
-});
+// Re-apply error reporting after boot (Laravel may reset it)
+error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE);
 
-// Override exception handler to show clean errors instead of trying to render views
+// Override exception handler to show clean errors
 $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(function (\Throwable $e, $request) {
     $errorClass = get_class($e);
     $errorMessage = $e->getMessage();
