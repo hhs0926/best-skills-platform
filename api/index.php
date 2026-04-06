@@ -4,6 +4,15 @@
  * Handles Vercel's read-only filesystem by redirecting writable paths to /tmp
  */
 
+// Suppress tempnam() warnings (Vercel Lambda treats warnings as errors)
+set_error_handler(function($errno, $errstr) {
+    // Allow tempnam() and similar filesystem warnings silently
+    if (strpos($errstr, 'tempnam') !== false || strpos($errstr, 'tmpfile') !== false) {
+        return true; // Suppress this specific warning
+    }
+    return false; // Let other errors through normally
+});
+
 $tmpDir = sys_get_temp_dir();
 
 // Create ALL required writable directories in /tmp
@@ -39,7 +48,7 @@ if (file_exists($dbPath) && !file_exists($dbTmpPath)) { copy($dbPath, $dbTmpPath
 // Set environment variables cleanly in code (Vercel env vars have BOM issues)
 $_ENV['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
 $_SERVER['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
-$_ENV['APP_DEBUG'] = 'true'; $_SERVER['APP_DEBUG'] = 'true';
+$_ENV['APP_DEBUG'] = 'false'; $_SERVER['APP_DEBUG'] = 'false';
 $_ENV['APP_ENV'] = 'production'; $_SERVER['APP_ENV'] = 'production';
 $_ENV['APP_URL'] = 'https://best-skills-platform.vercel.app';
 $_SERVER['APP_URL'] = 'https://best-skills-platform.vercel.app';
@@ -58,7 +67,7 @@ $app->useStoragePath($tmpDir . '/laravel_storage');
 $app->useBootstrapPath($dstCacheDir);
 $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
 
-// Handle the request with custom exception handler to show REAL errors
+// Handle the request with custom exception handler to show REAL errors (not Laravel's view-based error page)
 try {
     $response = $app->handleRequest(Illuminate\Http\Request::capture());
     $response->send();
