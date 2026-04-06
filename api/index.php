@@ -58,26 +58,76 @@ $app->useStoragePath($tmpDir . '/laravel_storage');
 $app->useBootstrapPath($dstCacheDir);
 $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
 
-// === THE FIX: Replace Laravel's error handler with our own that ignores tempnam warnings ===
-// We save the original handler and call it for non-tempnam errors
-$originalHandler = set_error_handler(function($errno, $errstr, $errfile, $errline) {
-    // Ignore tempnam/tmpfile warnings completely - these are harmless on Vercel Lambda
-    if ((strpos($errstr, 'tempnam') !== false || strpos($errstr, 'tmpfile') !== false) 
-        && strpos($errstr, 'temporary directory') !== false) {
-        return true; // Silently ignore
-    }
+// === NUCLEAR OPTION: Use Reflection to modify HandleExceptions's warning level property ===
+// Laravel's HandleExceptions converts E_WARNING to ErrorException when this flag is set
+try {
+    $handlerRef = new ReflectionClass(\Illuminate\Foundation\Bootstrap\HandleExceptions::class);
     
-    // For all other errors, let PHP's default behavior handle it
-    // This will trigger the normal error handling chain but won't convert these to exceptions
-    return false;
+    // Find the HandleExceptions instance bound in the container or get it from the bootstrap
+    // The key insight: we can access it through the resolved exception handler
+    $app->resolving(\Illuminate\Contracts\Debug\ExceptionHandler::class, function ($handler, $app) {
+        // This won't help since handler is already resolved
+    });
+} catch (\Throwable $e) {
+    // Reflection failed, try another approach
+}
+
+// === FINAL APPROACH: Wrap handleRequest to catch+suppress tempnam ErrorExceptions ===
+// We know the exact error - intercept it at the outermost level
+
+// Register a custom exception handler that detects and handles tempnam warnings specially
+$exceptionHandler = $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class);
+
+// Use reportable to detect the tempnam issue but don't stop propagation  
+// Instead, we wrap the entire request handling
+$hadTempnamWarning = false;
+
+set_exception_handler(function (\Throwable $e) use (&$hadTempnamWarning) {
+    $msg = $e->getMessage();
+    if (strpos($msg, 'tempnam') !== false && strpos($msg, 'temporary directory') !== false) {
+        $hadTempnamWarning = true;
+        // Don't re-throw - just mark it. The response may have already been generated.
+        return;
+    }
+    throw $e; // Re-throw real exceptions
 });
 
-// Also override the exception handler for clean error display  
-$app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(function (\Throwable $e, $request) {
-    $errorClass = get_class($e);
-    $errorMessage = $e->getMessage();
-    $errorFile = $e->getFile();
-    $errorLine = $e->getLine();
+try {
+    $response = $app->handleRequest(Illuminate\Http\Request::capture());
+    $response->send();
+} catch (\Throwable $e) {
+    $msg = $e->getMessage();
+    
+    // If it's the tempnam warning, the page was likely compiled successfully
+    // Try to send whatever response content was generated
+    if (strpos($msg, 'tempnam') !== false && strpos($msg, 'temporary directory') !== false) {
+        // The blade view got compiled (that's what triggered tempnam)
+        // But the error was thrown during Response::setContent -> View::render
+        // This means the view CONTENT was generated but not wrapped in Response
+        
+        // Attempt recovery: re-run with pre-compiled views (they should be cached now)
+        restore_exception_handler();
+        
+        try {
+            $response2 = $app->handleRequest(Illuminate\Http\Request::capture());
+            $response2->send();
+            return;
+        } catch (\Throwable $e2) {
+            // If still fails, show the error
+            $msg2 = $e2->getMessage();
+        }
+    }
+    
+    // Show clean error for any other exception
+    http_response_code(500);
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<!DOCTYPE html><html><head><title>' . htmlspecialchars(get_class($e)) . '</title>'
+       . '<style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#eee}'
+       . 'h1{color:#e94560}.error{background:#16213e;padding:15px;border-radius:8px;margin:10px 0}'
+       . 'table{width:100%;border-collapse:collapse}td{padding:4px 8px;border-bottom:1px #333 solid;font-size:13px}</style></head><body>'
+       . '<h1>' . htmlspecialchars(get_class($e)) . '</h1>'
+       . '<div class="error"><strong>Message:</strong> ' . htmlspecialchars($msg) 
+       . '<br><strong>File:</strong> ' . htmlspecialchars($e->getFile()) . ':' . $e->getLine() . '</div>';
     
     $traceHtml = '';
     foreach (array_slice($e->getTrace(), 0, 15) as $i => $frame) {
@@ -89,22 +139,5 @@ $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(func
         $traceHtml .= "<tr><td>#{$i}</td><td>" . htmlspecialchars($class . $type . $func) . "</td>";
         $traceHtml .= "<td>" . htmlspecialchars("{$file}:{$line}") . "</td></tr>\n";
     }
-    
-    return response(
-        "<!DOCTYPE html><html><head><title>{$errorClass}</title>"
-        . "<style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#eee}"
-        . "h1{color:#e94560}.error{background:#16213e;padding:15px;border-radius:8px;margin:10px 0}"
-        . "table{width:100%;border-collapse:collapse}td{padding:4px 8px;border-bottom:1px #333 solid;font-size:13px}</style></head><body>"
-        . "<h1>" . htmlspecialchars($errorClass) . "</h1>"
-        . "<div class='error'><strong>Message:</strong> " . htmlspecialchars($errorMessage) 
-        . "<br><strong>File:</strong> " . htmlspecialchars($errorFile) . ":{$errorLine}</div>"
-        . "<h3>Stack Trace</h3><table>{$traceHtml}</table>"
-        . "</body></html>",
-        500,
-        ['Content-Type' => 'text/html; charset=utf-8']
-    );
-});
-
-// Handle the request
-$response = $app->handleRequest(Illuminate\Http\Request::capture());
-$response->send();
+    echo "<h3>Stack Trace</h3><table>{$traceHtml}</table></body></html>";
+}
