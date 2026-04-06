@@ -236,7 +236,7 @@ if (file_exists($dbPath) && !file_exists($dbTmpPath)) { copy($dbPath, $dbTmpPath
 // Set environment variables cleanly in code (Vercel env vars have BOM issues)
 $_ENV['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
 $_SERVER['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
-$_ENV['APP_DEBUG'] = 'false'; $_SERVER['APP_DEBUG'] = 'false';
+$_ENV['APP_DEBUG'] = 'true'; $_SERVER['APP_DEBUG'] = 'true';
 $_ENV['APP_ENV'] = 'production'; $_SERVER['APP_ENV'] = 'production';
 $_ENV['APP_URL'] = 'https://best-skills-platform.vercel.app';
 $_SERVER['APP_URL'] = 'https://best-skills-platform.vercel.app';
