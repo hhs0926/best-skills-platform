@@ -82,16 +82,22 @@ $_ENV['CACHE_DRIVER'] = 'array'; $_SERVER['CACHE_DRIVER'] = 'array';
 $_ENV['SESSION_DRIVER'] = 'array'; $_SERVER['SESSION_DRIVER'] = 'array';
 $_ENV['LOG_CHANNEL'] = 'stderr'; $_SERVER['LOG_CHANNEL'] = 'stderr';
 
-// Load Composer autoloader and boot Laravel
+// Load Composer autoloader
 require_once __DIR__ . '/../vendor/autoload.php';
 
+// Boot Laravel application
 $app = require_once __DIR__ . '/../bootstrap/app.php';
 
-// Override paths for Vercel read-only filesystem
+// Override paths for Vercel read-only filesystem (MUST be before handle())
 $app->useStoragePath($tmpDir . '/laravel_storage');
 $app->useBootstrapPath($dstCacheDir);
 $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
 
-// Handle the request using Laravel 11's handleRequest method
-$app->handleRequest(Illuminate\Http\Request::capture())->send();
+// Use HTTP Kernel to handle request - this properly bootstraps Facades, middleware, etc.
+$kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
+$request = Illuminate\Http\Request::capture();
+$response = $kernel->handle($request);
+$response->send();
+$kernel->terminate($request, $response);
+
 }
