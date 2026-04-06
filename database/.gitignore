@@ -1,1 +1,3 @@
-*.sqlite*
+# Keep sqlite for Vercel deployment (read-only filesystem needs bundled DB)
+# Commented out to allow database.sqlite to be committed
+# *.sqlite*

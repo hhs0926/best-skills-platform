@@ -1,97 +1,55 @@
 <?php
 /**
  * Vercel Serverless Function entry point for Laravel
- * Debug: Show file system structure
+ * Handles Vercel's read-only filesystem by redirecting writable paths to /tmp
  */
 
-ini_set('display_errors', '1');
-error_reporting(E_ALL);
+$tmpDir = sys_get_temp_dir();
 
-http_response_code(200);
-header('Content-Type: text/plain; charset=utf-8');
-
-echo "=== FILE SYSTEM DEBUG ===\n";
-echo "CWD: " . getcwd() . "\n";
-echo "__DIR__: " . __DIR__ . "\n\n";
-
-echo "=== PARENT DIR STRUCTURE ===\n";
-$parent = __DIR__ . '/..';
-if (is_dir($parent)) {
-    foreach (scandir($parent) as $item) {
-        if ($item !== '.' && $item !== '..') {
-            $full = $parent . '/' . $item;
-            $type = is_dir($full) ? 'DIR' : 'FILE';
-            $size = is_file($full) ? filesize($full) : '-';
-            echo "  [$type] $item ($size)\n";
-        }
-    }
-} else {
-    echo "  Parent dir not found!\n";
-}
-
-echo "\n=== CHECKING CRITICAL FILES ===\n";
-$checks = [
-    '/../bootstrap/app.php',
-    '/../composer.json',
-    '/../vendor/autoload.php', 
-    '/../vendor/laravel/framework/src/Illuminate/Foundation/Application.php',
-    '/../public/index.php',
-    '/../database/database.sqlite',
+// Create writable directories in /tmp (Vercel Lambda has read-only fs except /tmp)
+$writableDirs = [
+    $tmpDir . '/laravel_storage',
+    $tmpDir . '/laravel_storage/framework',
+    $tmpDir . '/laravel_storage/framework/cache/data',
+    $tmpDir . '/laravel_storage/framework/sessions', 
+    $tmpDir . '/laravel_storage/framework/views',
+    $tmpDir . '/laravel_bootstrap_cache',
 ];
-foreach ($checks as $check) {
-    $path = __DIR__ . $check;
-    echo "  $check => " . (file_exists($path) ? 'EXISTS (' . (is_file($path) ? filesize($path) . 'b' : 'dir') . ')' : 'MISSING') . "\n";
-}
-
-echo "\n=== LAMBDA ENV ===\n";
-echo "DOCUMENT_ROOT: " . ($_SERVER['DOCUMENT_ROOT'] ?? 'not set') . "\n";
-echo "HOME: " . ($_ENV['HOME'] ?? getenv('HOME') ?? 'not set') . "\n";
-
-// Try to find vendor anywhere
-echo "\n=== SEARCHING FOR vendor ===\n";
-$root = realpath(__DIR__ . '/..');
-function findVendor($dir, $depth = 0) {
-    if ($depth > 4) return;
-    if (!is_dir($dir)) return;
-    foreach (scandir($dir) as $item) {
-        if ($item === '.' || $item === '..') continue;
-        $path = $dir . '/' . $item;
-        if ($item === 'vendor' && is_dir($path)) {
-            echo "  Found: $path (has autoload: " . (file_exists($path . '/autoload.php') ? 'YES' : 'NO') . ")\n";
-        } elseif (is_dir($path)) {
-            findVendor($path, $depth + 1);
-        }
+foreach ($writableDirs as $dir) {
+    if (!is_dir($dir)) {
+        mkdir($dir, 0755, true);
     }
 }
-findVendor($root);
-echo "/var/task/vendor => " . (is_dir('/var/task/vendor') ? 'DIR EXISTS' : 'not found') . "\n";
-echo "/var/task/user/vendor => " . (is_dir('/var/task/user/vendor') ? 'DIR EXISTS' : 'not found') . "\n";
 
-// Check if we can require bootstrap
-echo "\n=== REQUIRE TEST ===\n";
-try {
-    // First try loading vendor autoload
-    $autoloadLocations = [
-        __DIR__ . '/../vendor/autoload.php',
-        '/var/task/vendor/autoload.php',
-        '/var/task/user/vendor/autoload.php',
-    ];
-    $loaded = false;
-    foreach ($autoloadLocations as $al) {
-        if (file_exists($al)) {
-            require_once $al;
-            echo "  Loaded autoload from: $al\n";
-            $loaded = true;
-            break;
-        }
-    }
-    if (!$loaded) {
-        echo "  ERROR: No vendor/autoload.php found anywhere!\n";
-        echo "  Searched:\n";
-        foreach ($autoloadLocations as $al) {
-            echo "    - $al => " . (file_exists($al) ? 'exists' : 'missing') . "\n";
-        }
-    }
-} catch (\Throwable $e) {
-    echo "  Autoload error: " . $e->getMessage() . "\n";
+// Copy SQLite database to /tmp (Lambda's only writable location for DB)
+$dbPath = __DIR__ . '/../database/database.sqlite';
+$dbTmpPath = $tmpDir . '/database.sqlite';
+if (file_exists($dbPath) && !file_exists($dbTmpPath)) {
+    copy($dbPath, $dbTmpPath);
 }
+
+// Load Composer autoloader
+require_once __DIR__ . '/../vendor/autoload.php';
+
+// Boot Laravel
+$app = require_once __DIR__ . '/../bootstrap/app.php';
+
+// Override paths for Vercel's read-only filesystem
+$app->useStoragePath($tmpDir . '/laravel_storage');
+$app->useBootstrapPath($tmpDir . '/laravel_bootstrap_cache');
+
+// Make Laravel look for the DB in /tmp
+$app->singleton('path.database', function() use ($tmpDir) {
+    return $tmpDir;
+});
+
+// Handle the request
+$kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
+
+$response = $kernel->handle(
+    $request = Illuminate\Http\Request::capture()
+);
+
+$response->send();
+
+$kernel->terminate($request, $response);
