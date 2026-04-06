@@ -21,5 +21,8 @@ class DatabaseSeeder extends Seeder
             'name' => 'Test User',
             'email' => 'test@example.com',
         ]);
+
+        // 填充 Skills 数据
+        $this->call([SkillSeeder::class]);
     }
 }
