@@ -1,13 +1,12 @@
 <?php
 /**
  * Vercel Serverless Function entry point for Laravel
- * Handles Vercel's read-only filesystem by redirectoning writable paths to /tmp
  */
 
 $tmpDir = sys_get_temp_dir();
 
 // Create writable storage directories in /tmp
-$writableDirs = [
+$dirs = [
     $tmpDir . '/laravel_storage',
     $tmpDir . '/laravel_storage/framework',
     $tmpDir . '/laravel_storage/framework/cache/data',
@@ -15,49 +14,46 @@ $writableDirs = [
     $tmpDir . '/laravel_storage/framework/views',
     $tmpDir . '/laravel_storage/logs',
 ];
-foreach ($writableDirs as $dir) {
+foreach ($dirs as $dir) {
     if (!is_dir($dir)) { mkdir($dir, 0755, true); }
 }
 
-// Copy SQLite database to /tmp
+// Copy SQLite DB to /tmp
 $dbPath = __DIR__ . '/../database/database.sqlite';
 $dbTmpPath = $tmpDir . '/database.sqlite';
 if (file_exists($dbPath) && !file_exists($dbTmpPath)) {
     copy($dbPath, $dbTmpPath);
 }
 
-// Load Composer autoloader
+// Set critical environment variables before booting
+$_ENV['APP_DEBUG'] = 'true';
+$_SERVER['APP_DEBUG'] = 'true';
+$_ENV['CACHE_DRIVER'] = 'array';
+$_SERVER['CACHE_DRIVER'] = 'array';
+$_ENV['SESSION_DRIVER'] = 'array';
+$_SERVER['SESSION_DRIVER'] = 'array';
+$_ENV['LOG_CHANNEL'] = 'stderr';
+$_SERVER['LOG_CHANNEL'] = 'stderr';
+$_ENV['LOG_LEVEL'] = 'debug';
+$_SERVER['LOG_LEVEL'] = 'debug';
+
 require_once __DIR__ . '/../vendor/autoload.php';
 
-// Boot Laravel application
-$app = require_once __DIR__ . '/../bootstrap/app.php';
-
-// Only override storage path (keep bootstrap/cache as original - it's pre-compiled)
-$app->useStoragePath($tmpDir . '/laravel_storage');
-
-// Override DB path to use /tmp copy
-$app->singleton('path.database', function() use ($tmpDir) {
-    return $tmpDir;
-});
-
-// Handle the request
 try {
-    $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-    $response = $kernel->handle($request = Illuminate\Http\Request::capture());
-    $response->send();
-    $kernel->terminate($request, $response);
+    $app = require_once __DIR__ . '/../bootstrap/app.php';
+    
+    $app->useStoragePath($tmpDir . '/laravel_storage');
+    $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
+    
+    // Use L11's built-in handleRequest (lighter than Kernel)
+    $app->handleRequest(Illuminate\Http\Request::capture());
+    
 } catch (\Throwable $e) {
     http_response_code(500);
     header('Content-Type: text/plain; charset=utf-8');
-    echo "=== ERROR ===\n";
-    echo get_class($e) . ": " . $e->getMessage() . "\n";
-    echo "File: " . $e->getFile() . ":" . $e->getLine() . "\n\n";
-    echo "--- Trace (first 10) ---\n";
-    $trace = $e->getTrace();
-    foreach (array_slice($trace, 0, 10) as $i => $t) {
-        $file = $t['file'] ?? 'unknown';
-        $line = $t['line'] ?? '0';
-        $func = $t['function'] ?? 'unknown';
-        echo "#$i $file:$line -> $func\n";
-    }
+    echo "=== LARAVEL ERROR ===\n";
+    echo get_class($e) . "\n";
+    echo $e->getMessage() . "\n";
+    echo $e->getFile() . ":" . $e->getLine() . "\n\n";
+    echo "--- Trace ---\n" . $e->getTraceAsString() . "\n";
 }
