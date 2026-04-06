@@ -45,9 +45,16 @@ namespace Illuminate\Foundation\Bootstrap {
 
         public function handleError($level, $message, $file = '', $line = 0)
         {
-            // === ONLY CHANGE: Suppress tempnam/tmpfile warnings for Vercel Lambda ===
-            if ((strpos($message, 'tempnam') !== false || strpos($message, 'tmpfile') !== false)
-                && strpos($message, 'temporary directory') !== false) {
+            // === ONLY CHANGE: Suppress filesystem warnings for Vercel Lambda ===
+            // 1. tempnam/tmpfile warnings (harmless)
+            // 2. rename() failures in /tmp (Blade compile atomic write - file may not exist on Lambda)
+            $msgLower = strtolower($message);
+            if ((strpos($msgLower, 'tempnam') !== false || strpos($msgLower, 'tmpfile') !== false)
+                && strpos($msgLower, 'temporary') !== false) {
+                return true;
+            }
+            if ((strpos($message, 'rename(') !== false || strpos($message, 'No such file or directory') !== false)
+                && (strpos($file, 'Filesystem.php') !== false || strpos($message, '/tmp') !== false)) {
                 return true;
             }
             // === END CHANGE ===
@@ -236,7 +243,7 @@ if (file_exists($dbPath) && !file_exists($dbTmpPath)) { copy($dbPath, $dbTmpPath
 // Set environment variables cleanly in code (Vercel env vars have BOM issues)
 $_ENV['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
 $_SERVER['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
-$_ENV['APP_DEBUG'] = 'true'; $_SERVER['APP_DEBUG'] = 'true';
+$_ENV['APP_DEBUG'] = 'false'; $_SERVER['APP_DEBUG'] = 'false';
 $_ENV['APP_ENV'] = 'production'; $_SERVER['APP_ENV'] = 'production';
 $_ENV['APP_URL'] = 'https://best-skills-platform.vercel.app';
 $_SERVER['APP_URL'] = 'https://best-skills-platform.vercel.app';
