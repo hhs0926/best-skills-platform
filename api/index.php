@@ -4,14 +4,6 @@
  * Handles Vercel's read-only filesystem by redirecting writable paths to /tmp
  */
 
-// Suppress tempnam() warnings (Vercel Lambda treats warnings as errors)
-set_error_handler(function($errno, $errstr) {
-    if (strpos($errstr, 'tempnam') !== false || strpos($errstr, 'tmpfile') !== false) {
-        return true;
-    }
-    return false;
-});
-
 $tmpDir = sys_get_temp_dir();
 
 // Create ALL required writable directories in /tmp
@@ -66,8 +58,17 @@ $app->useStoragePath($tmpDir . '/laravel_storage');
 $app->useBootstrapPath($dstCacheDir);
 $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
 
-// CRITICAL: Override the exception handler BEFORE handling request
-// This prevents Laravel from trying to render view-based error pages (which fail on Vercel)
+// CRITICAL: Set error handler AFTER Laravel boot (Laravel's HandleExceptions overrides it)
+// Suppress tempnam() warnings - Vercel Lambda treats E_WARNING as errors
+set_error_handler(function($errno, $errstr) {
+    if (strpos($errstr, 'tempnam') !== false || strpos($errstr, 'tmpfile') !== false 
+        || strpos($errstr, 'temporary directory') !== false) {
+        return true; // Suppress
+    }
+    return false; // Let Laravel handle other errors
+});
+
+// Override exception handler to show clean errors instead of trying to render views
 $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(function (\Throwable $e, $request) {
     $errorClass = get_class($e);
     $errorMessage = $e->getMessage();
@@ -75,7 +76,7 @@ $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(func
     $errorLine = $e->getLine();
     
     $traceHtml = '';
-    foreach ($e->getTrace() as $i => $frame) {
+    foreach (array_slice($e->getTrace(), 0, 15) as $i => $frame) {
         $file = isset($frame['file']) ? $frame['file'] : '(internal)';
         $line = isset($frame['line']) ? $frame['line'] : '?';
         $class = isset($frame['class']) ? $frame['class'] : '';
@@ -90,7 +91,7 @@ $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(func
         . "<style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#eee}"
         . "h1{color:#e94560}.error{background:#16213e;padding:15px;border-radius:8px;margin:10px 0}"
         . "table{width:100%;border-collapse:collapse}td{padding:4px 8px;border-bottom:1px #333 solid;font-size:13px}</style></head><body>"
-        . "<h1>{$errorClass}</h1>"
+        . "<h1>" . htmlspecialchars($errorClass) . "</h1>"
         . "<div class='error'><strong>Message:</strong> " . htmlspecialchars($errorMessage) 
         . "<br><strong>File:</strong> " . htmlspecialchars($errorFile) . ":{$errorLine}</div>"
         . "<h3>Stack Trace</h3><table>{$traceHtml}</table>"
