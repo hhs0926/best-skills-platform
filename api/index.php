@@ -6,11 +6,10 @@
 
 // Suppress tempnam() warnings (Vercel Lambda treats warnings as errors)
 set_error_handler(function($errno, $errstr) {
-    // Allow tempnam() and similar filesystem warnings silently
     if (strpos($errstr, 'tempnam') !== false || strpos($errstr, 'tmpfile') !== false) {
-        return true; // Suppress this specific warning
+        return true;
     }
-    return false; // Let other errors through normally
+    return false;
 });
 
 $tmpDir = sys_get_temp_dir();
@@ -29,7 +28,7 @@ foreach ($writableDirs as $dir) {
     if (!is_dir($dir)) { mkdir($dir, 0755, true); }
 }
 
-// Copy bootstrap/cache files to /tmp (PackageManifest needs write access)
+// Copy bootstrap/cache files to /tmp
 $srcCacheDir = __DIR__ . '/../bootstrap/cache';
 $dstCacheDir = $tmpDir . '/laravel_bootstrap_cache';
 if (is_dir($srcCacheDir)) {
@@ -45,10 +44,10 @@ $dbPath = __DIR__ . '/../database/database.sqlite';
 $dbTmpPath = $tmpDir . '/database.sqlite';
 if (file_exists($dbPath) && !file_exists($dbTmpPath)) { copy($dbPath, $dbTmpPath); }
 
-// Set environment variables cleanly in code (Vercel env vars have BOM issues)
+// Set environment variables cleanly in code
 $_ENV['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
 $_SERVER['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
-$_ENV['APP_DEBUG'] = 'false'; $_SERVER['APP_DEBUG'] = 'false';
+$_ENV['APP_DEBUG'] = 'true'; $_SERVER['APP_DEBUG'] = 'true';
 $_ENV['APP_ENV'] = 'production'; $_SERVER['APP_ENV'] = 'production';
 $_ENV['APP_URL'] = 'https://best-skills-platform.vercel.app';
 $_SERVER['APP_URL'] = 'https://best-skills-platform.vercel.app';
@@ -67,21 +66,15 @@ $app->useStoragePath($tmpDir . '/laravel_storage');
 $app->useBootstrapPath($dstCacheDir);
 $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
 
-// Handle the request with custom exception handler to show REAL errors (not Laravel's view-based error page)
-try {
-    $response = $app->handleRequest(Illuminate\Http\Request::capture());
-    $response->send();
-} catch (\Throwable $e) {
-    http_response_code(500);
-    header('Content-Type: text/html; charset=utf-8');
-    
-    // Build a clean error page that shows the REAL original error
+// CRITICAL: Override the exception handler BEFORE handling request
+// This prevents Laravel from trying to render view-based error pages (which fail on Vercel)
+$app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(function (\Throwable $e, $request) {
     $errorClass = get_class($e);
     $errorMessage = $e->getMessage();
     $errorFile = $e->getFile();
     $errorLine = $e->getLine();
-    $traceHtml = '';
     
+    $traceHtml = '';
     foreach ($e->getTrace() as $i => $frame) {
         $file = isset($frame['file']) ? $frame['file'] : '(internal)';
         $line = isset($frame['line']) ? $frame['line'] : '?';
@@ -89,19 +82,24 @@ try {
         $type = isset($frame['type']) ? $frame['type'] : '';
         $func = isset($frame['function']) ? $frame['function'] : '';
         $traceHtml .= "<tr><td>#{$i}</td><td>" . htmlspecialchars($class . $type . $func) . "</td>";
-        $traceHtml .= "<td>" . htmlspecialchars($file) . ":{$line}</td></tr>\n";
+        $traceHtml .= "<td>" . htmlspecialchars("{$file}:{$line}") . "</td></tr>\n";
     }
     
-    echo <<<HTML
-<!DOCTYPE html>
-<html><head><title>Laravel Error - {$errorClass}</title>
-<style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#eee}
-h1{color:#e94560}.error{background:#16213e;padding:15px;border-radius:8px;margin:10px 0}
-table{width:100%;border-collapse:collapse}td{padding:4px 8px;border-bottom:1px #333 solid;font-size:13px}</style>
-</head><body>
-<h1>{$errorClass}</h1>
-<div class="error"><strong>Message:</strong> {$errorMessage}<br><strong>File:</strong> {$errorFile}:{$errorLine}</div>
-<h3>Stack Trace</h3><table>{$traceHtml}</table>
-</body></html>
-HTML;
-}
+    return response(
+        "<!DOCTYPE html><html><head><title>{$errorClass}</title>"
+        . "<style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#eee}"
+        . "h1{color:#e94560}.error{background:#16213e;padding:15px;border-radius:8px;margin:10px 0}"
+        . "table{width:100%;border-collapse:collapse}td{padding:4px 8px;border-bottom:1px #333 solid;font-size:13px}</style></head><body>"
+        . "<h1>{$errorClass}</h1>"
+        . "<div class='error'><strong>Message:</strong> " . htmlspecialchars($errorMessage) 
+        . "<br><strong>File:</strong> " . htmlspecialchars($errorFile) . ":{$errorLine}</div>"
+        . "<h3>Stack Trace</h3><table>{$traceHtml}</table>"
+        . "</body></html>",
+        500,
+        ['Content-Type' => 'text/html; charset=utf-8']
+    );
+});
+
+// Handle the request
+$response = $app->handleRequest(Illuminate\Http\Request::capture());
+$response->send();
