@@ -3,27 +3,23 @@
  * Vercel Serverless Function entry point for Laravel
  * Handles Vercel's read-only filesystem by redirecting writable paths to /tmp
  *
- * CRITICAL FIX: We redefine Illuminate\Foundation\Bootstrap\HandleExceptions 
- * BEFORE the real class is loaded, making our version take precedence.
+ * KEY FIX: Redefines HandleExceptions BEFORE autoload to suppress tempnam() warnings.
+ * Vercel Lambda treats E_WARNING from tempnam() as fatal errors.
  */
 
-// === Monkey-patch HandleExceptions to ignore tempnam warnings ===
+// === Monkey-patch HandleExceptions to ignore harmless tempnam() warnings ===
 namespace Illuminate\Foundation\Bootstrap {
     class HandleExceptions {
         public function handle($ignore = []) {
-            // Register a SAFE error handler that ignores tempnam warnings
             set_error_handler(function ($level, $message, $file = '', $line = 0) {
-                // CRITICAL: Ignore tempnam/tmpfile warnings - harmless on Vercel Lambda
+                // Suppress tempnam/tmpfile warnings - these are harmless on Vercel Lambda
                 if ((strpos($message, 'tempnam') !== false || strpos($message, 'tmpfile') !== false)
                     && strpos($message, 'temporary directory') !== false) {
-                    return true; // Suppress completely
+                    return true;
                 }
-                
-                // Check if error reporting includes this level
                 if (!(error_reporting() & $level)) {
                     return false;
                 }
-                
                 throw new \ErrorException($message, 0, $level, $file, $line);
             });
             
@@ -31,11 +27,6 @@ namespace Illuminate\Foundation\Bootstrap {
                 $handler = app(\Illuminate\Contracts\Debug\ExceptionHandler::class);
                 $handler->report($e);
                 $handler->render(request(), $e)->send();
-            });
-
-            register_shutdown_function(function () {
-                if (!is_null($error = error_get_last()) && $this->isFatal($error['type'])) {
-                }
             });
         }
 
@@ -45,7 +36,6 @@ namespace Illuminate\Foundation\Bootstrap {
     }
 }
 
-// Back to global namespace for the rest of the code
 namespace {
 
 $tmpDir = sys_get_temp_dir();
@@ -64,7 +54,7 @@ foreach ($writableDirs as $dir) {
     if (!is_dir($dir)) { mkdir($dir, 0755, true); }
 }
 
-// Copy bootstrap/cache files to /tmp
+// Copy bootstrap/cache files to /tmp (PackageManifest needs write access)
 $srcCacheDir = __DIR__ . '/../bootstrap/cache';
 $dstCacheDir = $tmpDir . '/laravel_bootstrap_cache';
 if (is_dir($srcCacheDir)) {
@@ -80,7 +70,7 @@ $dbPath = __DIR__ . '/../database/database.sqlite';
 $dbTmpPath = $tmpDir . '/database.sqlite';
 if (file_exists($dbPath) && !file_exists($dbTmpPath)) { copy($dbPath, $dbTmpPath); }
 
-// Set environment variables cleanly in code
+// Set environment variables cleanly in code (Vercel env vars have BOM issues)
 $_ENV['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
 $_SERVER['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
 $_ENV['APP_DEBUG'] = 'false'; $_SERVER['APP_DEBUG'] = 'false';
@@ -102,22 +92,6 @@ $app->useStoragePath($tmpDir . '/laravel_storage');
 $app->useBootstrapPath($dstCacheDir);
 $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
 
-// Custom exception renderer for clean error display
-$app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(function (\Throwable $e, $request) {
-    return response(
-        "<!DOCTYPE html><html><head><title>" . htmlspecialchars(get_class($e)) . "</title>"
-        . "<style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#eee}"
-        . "h1{color:#e94560}.error{background:#16213e;padding:15px;border-radius:8px;margin:10px 0}"
-        . "table{width:100%;border-collapse:collapse}td{padding:4px 8px;border-bottom:1px #333 solid;font-size:13px}</style></head><body>"
-        . "<h1>" . htmlspecialchars(get_class($e)) . "</h1>"
-        . "<div class='error'>" . htmlspecialchars($e->getMessage()) . "<br>" . htmlspecialchars($e->getFile()) . ':' . $e->getLine() . "</div>"
-        . "</body></html>",
-        500,
-        ['Content-Type' => 'text/html; charset=utf-8']
-    );
-});
-
-// Handle the request
-$response = $app->handleRequest(Illuminate\Http\Request::capture());
-$response->send();
+// Handle the request using Laravel 11's handleRequest method
+$app->handleRequest(Illuminate\Http\Request::capture())->send();
 }
