@@ -4,10 +4,6 @@
  * Handles Vercel's read-only filesystem by redirecting writable paths to /tmp
  */
 
-// CRITICAL: Suppress E_WARNING for tempnam() - Vercel Lambda converts warnings to ErrorExceptions
-// We must use error_reporting() since set_error_handler gets overridden by Laravel's HandleExceptions
-error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE);
-
 $tmpDir = sys_get_temp_dir();
 
 // Create ALL required writable directories in /tmp
@@ -43,7 +39,7 @@ if (file_exists($dbPath) && !file_exists($dbTmpPath)) { copy($dbPath, $dbTmpPath
 // Set environment variables cleanly in code
 $_ENV['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
 $_SERVER['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
-$_ENV['APP_DEBUG'] = 'true'; $_SERVER['APP_DEBUG'] = 'true';
+$_ENV['APP_DEBUG'] = 'false'; $_SERVER['APP_DEBUG'] = 'false';
 $_ENV['APP_ENV'] = 'production'; $_SERVER['APP_ENV'] = 'production';
 $_ENV['APP_URL'] = 'https://best-skills-platform.vercel.app';
 $_SERVER['APP_URL'] = 'https://best-skills-platform.vercel.app';
@@ -62,10 +58,21 @@ $app->useStoragePath($tmpDir . '/laravel_storage');
 $app->useBootstrapPath($dstCacheDir);
 $app->singleton('path.database', function() use ($tmpDir) { return $tmpDir; });
 
-// Re-apply error reporting after boot (Laravel may reset it)
-error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE);
+// === THE FIX: Replace Laravel's error handler with our own that ignores tempnam warnings ===
+// We save the original handler and call it for non-tempnam errors
+$originalHandler = set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    // Ignore tempnam/tmpfile warnings completely - these are harmless on Vercel Lambda
+    if ((strpos($errstr, 'tempnam') !== false || strpos($errstr, 'tmpfile') !== false) 
+        && strpos($errstr, 'temporary directory') !== false) {
+        return true; // Silently ignore
+    }
+    
+    // For all other errors, let PHP's default behavior handle it
+    // This will trigger the normal error handling chain but won't convert these to exceptions
+    return false;
+});
 
-// Override exception handler to show clean errors
+// Also override the exception handler for clean error display  
 $app->make(\Illuminate\Contracts\Debug\ExceptionHandler::class)->renderable(function (\Throwable $e, $request) {
     $errorClass = get_class($e);
     $errorMessage = $e->getMessage();
