@@ -240,10 +240,21 @@ $dbPath = __DIR__ . '/../database/database.sqlite';
 $dbTmpPath = $tmpDir . '/database.sqlite';
 if (file_exists($dbPath) && !file_exists($dbTmpPath)) { copy($dbPath, $dbTmpPath); }
 
+// Copy precompiled Blade view cache to /tmp (avoids runtime compile which fails on Lambda)
+$viewCacheSrc = __DIR__ . '/views-cache';
+$viewCacheDst = $tmpDir . '/laravel_storage/framework/views';
+if (is_dir($viewCacheSrc) && is_dir($viewCacheDst)) {
+    foreach (scandir($viewCacheSrc) as $file) {
+        if ($file !== '.' && $file !== '..' && !file_exists($viewCacheDst . '/' . $file)) {
+            copy($viewCacheSrc . '/' . $file, $viewCacheDst . '/' . $file);
+        }
+    }
+}
+
 // Set environment variables cleanly in code (Vercel env vars have BOM issues)
 $_ENV['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
 $_SERVER['APP_KEY'] = 'base64:Mg1jy9eGHrlJJhhYIpj1Y2oVYcRuG5/qK3JTat63WZE=';
-$_ENV['APP_DEBUG'] = 'true'; $_SERVER['APP_DEBUG'] = 'true';
+$_ENV['APP_DEBUG'] = 'false'; $_SERVER['APP_DEBUG'] = 'false';
 $_ENV['APP_ENV'] = 'production'; $_SERVER['APP_ENV'] = 'production';
 $_ENV['APP_URL'] = 'https://best-skills-platform.vercel.app';
 $_SERVER['APP_URL'] = 'https://best-skills-platform.vercel.app';
